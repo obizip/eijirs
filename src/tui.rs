@@ -88,9 +88,6 @@ impl App {
         // 画面のリストエリアの高さ分だけデータを取得する
         let lines = self.get_list_height()?;
 
-        // linesが0だと検索の意味がないので最低1確保（ウィンドウが極端に小さい場合など）
-        let lines = lines.max(1);
-
         self.results = self.db.search(query, lines, self.offset)?;
         Ok(())
     }
