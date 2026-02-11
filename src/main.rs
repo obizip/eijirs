@@ -1,105 +1,92 @@
-use anyhow::{Context, Result, bail};
-use encoding_rs_io::DecodeReaderBytesBuilder;
-use sled::Batch;
-use std::fs::File;
-use std::io::{self, Write};
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+mod db;
+mod tui;
 
+use anyhow::{Context, Result, bail};
 use clap::Parser;
+use db::Db;
+use std::path::{Path, PathBuf};
 
 const CMD_NAME: &str = "eijirs";
-const BATCH_SIZE: usize = 10_000;
-
-fn get_db_path() -> Result<PathBuf> {
-    let data_dir = dirs::data_dir()
-        .context("Could not determine data directory")?
-        .join(CMD_NAME);
-
-    if !data_dir.exists() {
-        std::fs::create_dir_all(&data_dir)?;
-    }
-
-    Ok(data_dir.join("db"))
-}
-
-fn init_db(db_path: &PathBuf, dict_path: &PathBuf) -> Result<sled::Db> {
-    let db: sled::Db = sled::open(db_path).context("Failed to open database")?;
-    let dict = File::open(dict_path)?;
-
-    let reader = BufReader::new(
-        DecodeReaderBytesBuilder::new()
-            .encoding(Some(encoding_rs::SHIFT_JIS))
-            .build(dict),
-    );
-
-    let mut count = 0;
-    let mut batch = Batch::default();
-
-    for line in reader.lines() {
-        let line = line?;
-        if !line.starts_with('■') {
-            continue;
-        }
-        // "■見出し : 訳語" の分割
-        if let Some((key, value)) = line.split_once(" : ") {
-            let key = key.trim_start_matches("■").trim();
-            let value = value.trim();
-
-            batch.insert(key, value);
-            count += 1;
-
-            if count % BATCH_SIZE == 0 {
-                db.apply_batch(batch)?;
-                batch = Batch::default();
-                print!("\rProcessed {} entries...", count);
-                io::stdout().flush()?;
-            }
-        }
-    }
-    db.apply_batch(batch)?;
-    db.flush()?;
-    println!("Successfully stored {} entries.", count);
-    Ok(db)
-}
 
 #[derive(Parser, Debug)]
-#[command(name = CMD_NAME, version = "1.0")]
+#[command(name = CMD_NAME, version = "1.0", about = "English-Japanese Dictionary CLI")]
 struct Args {
+    /// 検索したい単語やフレーズ (指定がない場合はTUIモードで起動)
     #[arg(value_name = "QUERY")]
-    query: String,
+    query: Option<String>,
 
+    /// 表示する行数 (CLIモード用)
     #[arg(short = 'n', long, value_name = "LINES", default_value_t = 10)]
     lines: usize,
 
+    /// 辞書データベースを初期化する (辞書ファイルのパスを指定)
     #[arg(long = "init", value_name = "DICT_PATH")]
     init: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    let db_path = resolve_db_path()?;
 
-    let db_path = get_db_path()?;
-    let db = if let Some(dict_path) = args.init {
-        if db_path.exists() {
-            std::fs::remove_dir_all(&db_path)?;
-        }
-        println!("Initializing database at {:?}...", db_path);
-        init_db(&db_path, &dict_path)?
-    } else {
-        sled::open(db_path)?
-    };
+    if let Some(dict_path) = args.init {
+        return perform_init(&db_path, &dict_path);
+    }
+
+    let db = open_db(&db_path)?;
+
+    match args.query {
+        Some(query) => perform_search(&db, &query, args.lines),
+        None => perform_tui(db),
+    }
+}
+
+fn resolve_db_path() -> Result<PathBuf> {
+    let data_dir = dirs::data_dir()
+        .context("Could not determine data directory. Please check your OS environment.")?
+        .join(CMD_NAME);
+
+    if !data_dir.exists() {
+        std::fs::create_dir_all(&data_dir)
+            .context(format!("Failed to create data directory at {:?}", data_dir))?;
+    }
+
+    Ok(data_dir.join("db"))
+}
+
+/// データベースを初期化・再構築する
+fn perform_init(db_path: &Path, dict_path: &Path) -> Result<()> {
+    if db_path.exists() {
+        std::fs::remove_dir_all(db_path)
+            .context("Failed to remove existing database for re-initialization")?;
+    }
+
+    println!("Initializing database at {:?}...", db_path);
+    Db::init(db_path, dict_path).context("Failed to initialize database")?;
+
+    println!("Successfully initialized.");
+    Ok(())
+}
+
+fn open_db(db_path: &Path) -> Result<Db> {
+    let db = Db::open(&db_path).context("Failed to open database")?;
+
     if db.is_empty() {
         bail!("Database is empty. Please run with --init <DICT_PATH>");
     }
 
-    let query = args.query.as_bytes();
-    for item in db.range(query..).take(args.lines) {
-        let (key, value) = item?;
-        let key = String::from_utf8(key.to_vec())?;
-        let value = String::from_utf8(value.to_vec())?;
-        println!("{key} : {value}");
+    Ok(db)
+}
+
+fn perform_search(db: &Db, query: &str, lines: usize) -> Result<()> {
+    let results = db.search(query.to_string(), lines, 0)?;
+
+    for (key, value) in results {
+        println!("{} : {}", key, value);
     }
 
     Ok(())
+}
+
+fn perform_tui(db: Db) -> Result<()> {
+    tui::tui_main(db).context("TUI application error")
 }
