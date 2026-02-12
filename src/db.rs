@@ -13,6 +13,14 @@ pub struct Db {
     db: sled::Db,
 }
 
+fn normalize(s: &str) -> String {
+    let mut s = s.to_string();
+    if let Some(index) = s.find("{") {
+        s = s[..index].to_string()
+    }
+    s.replace("-", "").replace(" ", "").to_lowercase()
+}
+
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
         Ok(Self {
@@ -43,7 +51,10 @@ impl Db {
                 let key = key.trim_start_matches("■").trim();
                 let value = value.trim();
 
-                batch.insert(key, value);
+                batch.insert(
+                    (normalize(key) + &(count % 50).to_string()).as_str(),
+                    format!("{key} : {value}").as_str(),
+                );
                 count += 1;
 
                 if count % BATCH_SIZE == 0 {
@@ -66,17 +77,18 @@ impl Db {
 
     pub fn search(
         &self,
-        query: String,
+        query: &str,
         lines: usize,
         offset: usize,
     ) -> Result<Vec<(String, String)>> {
-        let query = query.as_bytes();
+        let normalized = normalize(query);
+        let query = normalized.as_bytes();
         let mut results = Vec::new();
         for item in self.db.range(query..).skip(offset).take(lines) {
-            let (key, value) = item?;
-            let key = String::from_utf8(key.to_vec())?;
+            let (_, value) = item?;
             let value = String::from_utf8(value.to_vec())?;
-            results.push((key, value))
+            let (k, v) = value.split_once(" : ").unwrap();
+            results.push((k.to_string(), v.to_string()))
         }
         Ok(results)
     }

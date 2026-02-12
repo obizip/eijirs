@@ -83,7 +83,7 @@ impl App {
     }
 
     fn update_results(&mut self) -> anyhow::Result<()> {
-        let query = self.input.value().to_string();
+        let query = self.input.value();
 
         // 画面のリストエリアの高さ分だけデータを取得する
         let lines = self.get_list_height()?;

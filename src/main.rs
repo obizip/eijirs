@@ -78,7 +78,7 @@ fn open_db(db_path: &Path) -> Result<Db> {
 }
 
 fn perform_search(db: &Db, query: &str, lines: usize) -> Result<()> {
-    let results = db.search(query.to_string(), lines, 0)?;
+    let results = db.search(query, lines, 0)?;
 
     for (key, value) in results {
         println!("{} : {}", key, value);
